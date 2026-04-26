@@ -1,3 +1,7 @@
+/*
+ * test_protocol_filter.c - Unit tests for protocol_filter module
+ */
+
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
@@ -6,124 +10,120 @@
 static int tests_run = 0;
 static int tests_passed = 0;
 
-#define TEST(name) do { printf("  [TEST] %s\n", name); tests_run++; } while(0)
-#define PASS()     do { tests_passed++; } while(0)
-#define FAIL(msg)  do { printf("  [FAIL] %s\n", msg); } while(0)
+#define TEST(name) static void name(void)
+#define RUN_TEST(name) do { tests_run++; name(); tests_passed++; \
+    printf("  PASS: " #name "\n"); } while(0)
 
-static void test_filter_set_init(void) {
-    TEST("filter_set_init sets default_accept and zero count");
-    filter_set_t fs;
-    filter_set_init(&fs, true);
-    assert(fs.count == 0);
-    assert(fs.default_accept == true);
-    PASS();
+TEST(test_filter_init) {
+    ProtocolFilter f;
+    protocol_filter_init(&f);
+    assert(f.mode == FILTER_MODE_PASSTHROUGH);
+    assert(f.rule_count == 0);
 }
 
-static void test_filter_set_add_and_remove(void) {
-    TEST("filter_set_add returns valid index and remove clears it");
-    filter_set_t fs;
-    filter_set_init(&fs, true);
-
-    protocol_filter_t f = {0};
-    f.pattern[0] = 0xAA;
-    f.mask[0]    = 0xFF;
-    f.pattern_len = 1;
-    f.mode = FILTER_MODE_ACCEPT;
-    f.enabled = true;
-
-    int idx = filter_set_add(&fs, &f);
-    assert(idx == 0);
-    assert(fs.count == 1);
-
-    bool removed = filter_set_remove(&fs, idx);
-    assert(removed == true);
-    assert(fs.filters[idx].enabled == false);
-    PASS();
+TEST(test_passthrough_allows_all) {
+    ProtocolFilter f;
+    protocol_filter_init(&f);
+    uint8_t data[] = {0x01, 0x02, 0x03};
+    assert(protocol_filter_apply(&f, data, sizeof(data)) == true);
 }
 
-static void test_evaluate_accept_on_match(void) {
-    TEST("evaluate returns true when ACCEPT filter matches");
-    filter_set_t fs;
-    filter_set_init(&fs, false); /* default reject */
+TEST(test_include_start_byte) {
+    ProtocolFilter f;
+    protocol_filter_init(&f);
+    f.mode = FILTER_MODE_INCLUDE;
 
-    protocol_filter_t f = {0};
-    f.pattern[0] = 0x02;
-    f.mask[0]    = 0xFF;
-    f.pattern_len = 1;
-    f.mode = FILTER_MODE_ACCEPT;
-    f.enabled = true;
+    FilterRule rule = {0};
+    rule.type = FILTER_RULE_START_BYTE;
+    rule.pattern[0] = 0xAA;
+    rule.pattern_len = 1;
+    protocol_filter_add_rule(&f, &rule);
 
-    filter_set_add(&fs, &f);
-
-    uint8_t pkt[] = {0x02, 0x10, 0x20, 0x03};
-    assert(filter_set_evaluate(&fs, pkt, sizeof(pkt)) == true);
-    PASS();
+    uint8_t match[]    = {0xAA, 0x01, 0x02};
+    uint8_t no_match[] = {0xBB, 0x01, 0x02};
+    assert(protocol_filter_apply(&f, match,    sizeof(match))    == true);
+    assert(protocol_filter_apply(&f, no_match, sizeof(no_match)) == false);
 }
 
-static void test_evaluate_reject_on_match(void) {
-    TEST("evaluate returns false when REJECT filter matches");
-    filter_set_t fs;
-    filter_set_init(&fs, true); /* default accept */
+TEST(test_exclude_pattern) {
+    ProtocolFilter f;
+    protocol_filter_init(&f);
+    f.mode = FILTER_MODE_EXCLUDE;
 
-    protocol_filter_t f = {0};
-    f.pattern[0] = 0xFF;
-    f.mask[0]    = 0xFF;
-    f.pattern_len = 1;
-    f.mode = FILTER_MODE_REJECT;
-    f.enabled = true;
+    FilterRule rule = {0};
+    rule.type = FILTER_RULE_PATTERN;
+    rule.pattern[0] = 0xDE;
+    rule.pattern[1] = 0xAD;
+    rule.pattern_len = 2;
+    protocol_filter_add_rule(&f, &rule);
 
-    filter_set_add(&fs, &f);
-
-    uint8_t pkt[] = {0xFF, 0x00};
-    assert(filter_set_evaluate(&fs, pkt, sizeof(pkt)) == false);
-    PASS();
+    uint8_t blocked[] = {0x01, 0xDE, 0xAD, 0x04};
+    uint8_t allowed[] = {0x01, 0x02, 0x03, 0x04};
+    assert(protocol_filter_apply(&f, blocked, sizeof(blocked)) == false);
+    assert(protocol_filter_apply(&f, allowed, sizeof(allowed)) == true);
 }
 
-static void test_evaluate_length_constraints(void) {
-    TEST("evaluate respects min/max packet length constraints");
-    filter_set_t fs;
-    filter_set_init(&fs, false);
+TEST(test_min_length_filter) {
+    ProtocolFilter f;
+    protocol_filter_init(&f);
+    f.mode = FILTER_MODE_INCLUDE;
 
-    protocol_filter_t f = {0};
-    f.pattern[0]    = 0x01;
-    f.mask[0]       = 0xFF;
-    f.pattern_len   = 1;
-    f.min_packet_len = 4;
-    f.max_packet_len = 16;
-    f.mode   = FILTER_MODE_ACCEPT;
-    f.enabled = true;
+    FilterRule rule = {0};
+    rule.type = FILTER_RULE_MIN_LENGTH;
+    rule.min_length = 4;
+    protocol_filter_add_rule(&f, &rule);
 
-    filter_set_add(&fs, &f);
-
-    uint8_t short_pkt[] = {0x01, 0x02};          /* too short */
-    uint8_t ok_pkt[]    = {0x01, 0x02, 0x03, 0x04};
-
-    assert(filter_set_evaluate(&fs, short_pkt, sizeof(short_pkt)) == false);
-    assert(filter_set_evaluate(&fs, ok_pkt, sizeof(ok_pkt)) == true);
-    PASS();
+    uint8_t short_pkt[] = {0x01, 0x02};
+    uint8_t long_pkt[]  = {0x01, 0x02, 0x03, 0x04, 0x05};
+    assert(protocol_filter_apply(&f, short_pkt, sizeof(short_pkt)) == false);
+    assert(protocol_filter_apply(&f, long_pkt,  sizeof(long_pkt))  == true);
 }
 
-static void test_evaluate_default_policy(void) {
-    TEST("evaluate falls back to default_accept when no filter matches");
-    filter_set_t fs;
-    filter_set_init(&fs, true);
+TEST(test_max_rules_limit) {
+    ProtocolFilter f;
+    protocol_filter_init(&f);
+    FilterRule rule = {0};
+    rule.type = FILTER_RULE_START_BYTE;
 
-    uint8_t pkt[] = {0xAB, 0xCD};
-    assert(filter_set_evaluate(&fs, pkt, sizeof(pkt)) == true);
+    for (int i = 0; i < FILTER_MAX_RULES; i++) {
+        assert(protocol_filter_add_rule(&f, &rule) == true);
+    }
+    assert(protocol_filter_add_rule(&f, &rule) == false);
+    assert(protocol_filter_rule_count(&f) == FILTER_MAX_RULES);
+}
 
-    filter_set_init(&fs, false);
-    assert(filter_set_evaluate(&fs, pkt, sizeof(pkt)) == false);
-    PASS();
+TEST(test_clear_resets_filter) {
+    ProtocolFilter f;
+    protocol_filter_init(&f);
+    f.mode = FILTER_MODE_INCLUDE;
+    FilterRule rule = {0};
+    rule.type = FILTER_RULE_START_BYTE;
+    protocol_filter_add_rule(&f, &rule);
+
+    protocol_filter_clear(&f);
+    assert(f.rule_count == 0);
+    assert(f.mode == FILTER_MODE_PASSTHROUGH);
+}
+
+TEST(test_null_safety) {
+    uint8_t data[] = {0x01};
+    assert(protocol_filter_apply(NULL, data, 1)  == false);
+    assert(protocol_filter_apply(NULL, NULL, 0)  == false);
+    assert(protocol_filter_rule_count(NULL)       == 0);
+    protocol_filter_init(NULL);  /* should not crash */
+    protocol_filter_clear(NULL); /* should not crash */
 }
 
 int main(void) {
-    printf("=== protocol_filter tests ===\n");
-    test_filter_set_init();
-    test_filter_set_add_and_remove();
-    test_evaluate_accept_on_match();
-    test_evaluate_reject_on_match();
-    test_evaluate_length_constraints();
-    test_evaluate_default_policy();
-    printf("Results: %d/%d passed\n", tests_passed, tests_run);
+    printf("Running protocol_filter tests...\n");
+    RUN_TEST(test_filter_init);
+    RUN_TEST(test_passthrough_allows_all);
+    RUN_TEST(test_include_start_byte);
+    RUN_TEST(test_exclude_pattern);
+    RUN_TEST(test_min_length_filter);
+    RUN_TEST(test_max_rules_limit);
+    RUN_TEST(test_clear_resets_filter);
+    RUN_TEST(test_null_safety);
+    printf("Results: %d/%d tests passed\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;
 }
