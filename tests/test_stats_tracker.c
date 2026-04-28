@@ -1,126 +1,119 @@
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <assert.h>
-#include <unistd.h>
-
+#include <math.h>
 #include "../src/stats_tracker.h"
 
-static int tests_run    = 0;
-static int tests_passed = 0;
-
-#define TEST(name) do { \
-    printf("  [TEST] %s ... ", #name); \
-    tests_run++; \
-} while (0)
-
-#define PASS() do { \
-    printf("PASS\n"); \
-    tests_passed++; \
-} while (0)
-
-#define FAIL(msg) do { \
-    printf("FAIL: %s\n", msg); \
-    exit(1); \
-} while (0)
-
 static void test_init(void) {
-    TEST(init_zeroes_counters);
-    stats_tracker_t st;
-    stats_init(&st, "/dev/ttyUSB0", 115200);
-    assert(st.rx.bytes_total   == 0);
-    assert(st.tx.bytes_total   == 0);
-    assert(st.rx.errors_total  == 0);
-    assert(st.baud_rate        == 115200);
-    assert(strcmp(st.port_name, "/dev/ttyUSB0") == 0);
-    PASS();
+    stats_tracker_t t;
+    stats_tracker_init(&t);
+    assert(t.total_bytes == 0);
+    assert(t.total_packets == 0);
+    assert(t.valid_packets == 0);
+    assert(t.error_packets == 0);
+    assert(t.min_packet_size == UINT32_MAX);
+    assert(t.max_packet_size == 0);
+    printf("PASS: test_init\n");
 }
 
-static void test_record_rx(void) {
-    TEST(record_rx_accumulates_bytes);
-    stats_tracker_t st;
-    stats_init(&st, "/dev/ttyS0", 9600);
-    stats_record_rx(&st, 64, 0);
-    stats_record_rx(&st, 32, 0);
-    assert(st.rx.bytes_total == 96);
-    assert(st.rx.errors_total == 0);
-    PASS();
-
-    TEST(record_rx_counts_errors);
-    stats_record_rx(&st, 1, 1);
-    assert(st.rx.errors_total == 1);
-    assert(st.rx.bytes_total  == 97);
-    PASS();
+static void test_record_bytes(void) {
+    stats_tracker_t t;
+    stats_tracker_init(&t);
+    stats_tracker_record_byte(&t, 0xAA);
+    stats_tracker_record_byte(&t, 0xAA);
+    stats_tracker_record_byte(&t, 0xFF);
+    assert(t.total_bytes == 3);
+    assert(t.byte_frequency[0xAA] == 2);
+    assert(t.byte_frequency[0xFF] == 1);
+    printf("PASS: test_record_bytes\n");
 }
 
-static void test_record_tx(void) {
-    TEST(record_tx_accumulates_bytes);
-    stats_tracker_t st;
-    stats_init(&st, "/dev/ttyS0", 9600);
-    stats_record_tx(&st, 128, 0);
-    stats_record_tx(&st, 16,  0);
-    assert(st.tx.bytes_total == 144);
-    PASS();
-}
-
-static void test_packet_counting(void) {
-    TEST(packet_count_increments);
-    stats_tracker_t st;
-    stats_init(&st, "/dev/ttyS1", 57600);
-    stats_record_packet(&st, 0); /* rx */
-    stats_record_packet(&st, 0);
-    stats_record_packet(&st, 1); /* tx */
-    assert(st.rx.packets_total == 2);
-    assert(st.tx.packets_total == 1);
-    PASS();
+static void test_record_packets(void) {
+    stats_tracker_t t;
+    stats_tracker_init(&t);
+    stats_tracker_record_packet(&t, 10, 0);
+    stats_tracker_record_packet(&t, 20, 0);
+    stats_tracker_record_packet(&t, 5,  1);
+    assert(t.total_packets == 3);
+    assert(t.valid_packets == 2);
+    assert(t.error_packets == 1);
+    assert(t.min_packet_size == 5);
+    assert(t.max_packet_size == 20);
+    assert(t.total_packet_bytes == 35);
+    printf("PASS: test_record_packets\n");
 }
 
 static void test_avg_packet_size(void) {
-    TEST(avg_packet_size_computed);
-    stats_tracker_t st;
-    stats_init(&st, "/dev/ttyS2", 115200);
-    stats_record_rx(&st, 100, 0);
-    stats_record_packet(&st, 0);
-    stats_record_rx(&st, 200, 0);
-    stats_record_packet(&st, 0);
-    /* avg = 300 / 2 = 150 */
-    assert(st.rx.avg_packet_size == 150.0);
-    PASS();
+    stats_tracker_t t;
+    stats_tracker_init(&t);
+    stats_tracker_record_packet(&t, 10, 0);
+    stats_tracker_record_packet(&t, 30, 0);
+    double avg = stats_tracker_avg_packet_size(&t);
+    assert(fabs(avg - 20.0) < 0.001);
+    printf("PASS: test_avg_packet_size\n");
+}
+
+static void test_error_rate(void) {
+    stats_tracker_t t;
+    stats_tracker_init(&t);
+    stats_tracker_record_packet(&t, 8, 0);
+    stats_tracker_record_packet(&t, 8, 1);
+    double rate = stats_tracker_error_rate(&t);
+    assert(fabs(rate - 0.5) < 0.001);
+    printf("PASS: test_error_rate\n");
+}
+
+static void test_most_frequent_byte(void) {
+    stats_tracker_t t;
+    stats_tracker_init(&t);
+    for (int i = 0; i < 5; i++) stats_tracker_record_byte(&t, 0x55);
+    for (int i = 0; i < 3; i++) stats_tracker_record_byte(&t, 0x0A);
+    assert(stats_tracker_most_frequent_byte(&t) == 0x55);
+    printf("PASS: test_most_frequent_byte\n");
+}
+
+static void test_gap_tracking(void) {
+    stats_tracker_t t;
+    stats_tracker_init(&t);
+    stats_tracker_record_gap(&t, 1000);
+    stats_tracker_record_gap(&t, 3000);
+    assert(t.gap_count == 2);
+    assert(t.max_gap_us == 3000);
+    assert(t.total_gap_us == 4000);
+    printf("PASS: test_gap_tracking\n");
 }
 
 static void test_reset(void) {
-    TEST(reset_clears_counters);
-    stats_tracker_t st;
-    stats_init(&st, "/dev/ttyUSB1", 19200);
-    stats_record_rx(&st, 512, 0);
-    stats_record_tx(&st, 256, 1);
-    stats_reset(&st);
-    assert(st.rx.bytes_total  == 0);
-    assert(st.tx.bytes_total  == 0);
-    assert(st.tx.errors_total == 0);
-    assert(st.baud_rate       == 19200); /* config preserved */
-    PASS();
+    stats_tracker_t t;
+    stats_tracker_init(&t);
+    stats_tracker_record_byte(&t, 0x01);
+    stats_tracker_record_packet(&t, 16, 0);
+    stats_tracker_reset(&t);
+    assert(t.total_bytes == 0);
+    assert(t.total_packets == 0);
+    assert(t.min_packet_size == UINT32_MAX);
+    printf("PASS: test_reset\n");
 }
 
-static void test_update_duration(void) {
-    TEST(update_sets_duration);
-    stats_tracker_t st;
-    stats_init(&st, "/dev/ttyUSB0", 115200);
-    sleep(1);
-    stats_update(&st);
-    assert(st.duration_sec >= 1);
-    PASS();
+static void test_null_safety(void) {
+    stats_tracker_init(NULL);
+    stats_tracker_record_byte(NULL, 0x00);
+    stats_tracker_record_packet(NULL, 10, 0);
+    stats_tracker_record_gap(NULL, 500);
+    assert(stats_tracker_avg_packet_size(NULL) == 0.0);
+    assert(stats_tracker_error_rate(NULL) == 0.0);
+    printf("PASS: test_null_safety\n");
 }
 
 int main(void) {
-    printf("=== stats_tracker tests ===\n");
     test_init();
-    test_record_rx();
-    test_record_tx();
-    test_packet_counting();
+    test_record_bytes();
+    test_record_packets();
     test_avg_packet_size();
+    test_error_rate();
+    test_most_frequent_byte();
+    test_gap_tracking();
     test_reset();
-    test_update_duration();
-    printf("\nResults: %d/%d passed\n", tests_passed, tests_run);
-    return (tests_passed == tests_run) ? 0 : 1;
+    test_null_safety();
+    printf("All stats_tracker tests passed.\n");
+    return 0;
 }
