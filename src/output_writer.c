@@ -1,79 +1,98 @@
 #include "output_writer.h"
+#include <stdarg.h>
+#include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
+#include <errno.h>
 
-int output_writer_init(output_writer_t *w, output_dest_t dest,
-                       const char *filepath,
-                       const display_config_t *fmt_cfg) {
-    if (!w) return -1;
-    memset(w, 0, sizeof(*w));
-    w->dest = dest;
+int output_writer_init(output_writer_t *ow, output_dest_t dest,
+                       const char *filepath, bool use_color)
+{
+    if (!ow) return -1;
 
-    if (fmt_cfg)
-        memcpy(&w->fmt_cfg, fmt_cfg, sizeof(display_config_t));
-    else
-        display_config_init(&w->fmt_cfg);
+    memset(ow, 0, sizeof(*ow));
+    ow->dest       = dest;
+    ow->use_color  = use_color;
+    ow->flush_each_write = false;
+    ow->file       = NULL;
 
-    if ((dest == OUT_FILE || dest == OUT_BOTH) && filepath) {
-        strncpy(w->filepath, filepath, sizeof(w->filepath) - 1);
-        w->file = fopen(filepath, "a");
-        if (!w->file) {
-            fprintf(stderr, "output_writer: cannot open '%s'\n", filepath);
+    if (dest == OUTPUT_FILE || dest == OUTPUT_BOTH) {
+        if (!filepath) return -1;
+        ow->file = fopen(filepath, "a");
+        if (!ow->file) {
             return -1;
         }
     }
     return 0;
 }
 
-int output_writer_write(output_writer_t *w,
-                        const uint8_t *data, size_t len,
-                        uint64_t timestamp_us) {
-    if (!w || !data || len == 0) return -1;
-
-    char prefix[128] = {0};
-    char body[DISPLAY_MAX_LINE_LEN] = {0};
-
-    display_format_prefix(&w->fmt_cfg, timestamp_us, (size_t)w->bytes_written,
-                          prefix, sizeof(prefix));
-    display_format_bytes(&w->fmt_cfg, data, len, body, sizeof(body));
-
-    if (w->dest == OUT_STDOUT || w->dest == OUT_BOTH) {
-        printf("%s%s\n", prefix, body);
+void output_writer_close(output_writer_t *ow)
+{
+    if (!ow) return;
+    if (ow->file) {
+        fflush(ow->file);
+        fclose(ow->file);
+        ow->file = NULL;
     }
-
-    if ((w->dest == OUT_FILE || w->dest == OUT_BOTH) && w->file) {
-        /* Strip ANSI codes for file output by using colorize=0 clone */
-        if (w->fmt_cfg.colorize) {
-            display_config_t plain = w->fmt_cfg;
-            plain.colorize = 0;
-            char plain_prefix[128] = {0};
-            char plain_body[DISPLAY_MAX_LINE_LEN] = {0};
-            display_format_prefix(&plain, timestamp_us,
-                                  (size_t)w->bytes_written,
-                                  plain_prefix, sizeof(plain_prefix));
-            display_format_bytes(&plain, data, len,
-                                 plain_body, sizeof(plain_body));
-            fprintf(w->file, "%s%s\n", plain_prefix, plain_body);
-        } else {
-            fprintf(w->file, "%s%s\n", prefix, body);
-        }
-    }
-
-    w->bytes_written += (uint64_t)len;
-    w->lines_written++;
-    return 0;
 }
 
-void output_writer_flush(output_writer_t *w) {
-    if (!w) return;
-    fflush(stdout);
-    if (w->file) fflush(w->file);
+int output_writer_write(output_writer_t *ow, const char *fmt, ...)
+{
+    if (!ow || !fmt) return -1;
+
+    va_list ap;
+    int ret = 0;
+
+    if (ow->dest == OUTPUT_STDOUT || ow->dest == OUTPUT_BOTH) {
+        va_start(ap, fmt);
+        ret = vfprintf(stdout, fmt, ap);
+        va_end(ap);
+        if (ow->flush_each_write) fflush(stdout);
+    }
+
+    if ((ow->dest == OUTPUT_FILE || ow->dest == OUTPUT_BOTH) && ow->file) {
+        va_start(ap, fmt);
+        ret = vfprintf(ow->file, fmt, ap);
+        va_end(ap);
+        if (ow->flush_each_write) fflush(ow->file);
+    }
+
+    return ret;
 }
 
-void output_writer_close(output_writer_t *w) {
-    if (!w) return;
-    if (w->file) {
-        fclose(w->file);
-        w->file = NULL;
+int output_writer_write_bytes(output_writer_t *ow,
+                              const uint8_t *data, size_t len)
+{
+    if (!ow || !data || len == 0) return -1;
+
+    int ret = 0;
+
+    if (ow->dest == OUTPUT_STDOUT || ow->dest == OUTPUT_BOTH) {
+        ret = (int)fwrite(data, 1, len, stdout);
+        if (ow->flush_each_write) fflush(stdout);
     }
+
+    if ((ow->dest == OUTPUT_FILE || ow->dest == OUTPUT_BOTH) && ow->file) {
+        ret = (int)fwrite(data, 1, len, ow->file);
+        if (ow->flush_each_write) fflush(ow->file);
+    }
+
+    return ret;
+}
+
+void output_writer_flush(output_writer_t *ow)
+{
+    if (!ow) return;
+    if (ow->dest == OUTPUT_STDOUT || ow->dest == OUTPUT_BOTH)
+        fflush(stdout);
+    if ((ow->dest == OUTPUT_FILE || ow->dest == OUTPUT_BOTH) && ow->file)
+        fflush(ow->file);
+}
+
+bool output_writer_is_open(const output_writer_t *ow)
+{
+    if (!ow) return false;
+    if (ow->dest == OUTPUT_STDOUT) return true;
+    if ((ow->dest == OUTPUT_FILE || ow->dest == OUTPUT_BOTH) && ow->file)
+        return true;
+    return false;
 }

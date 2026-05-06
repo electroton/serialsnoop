@@ -1,40 +1,30 @@
 #ifndef OUTPUT_WRITER_H
 #define OUTPUT_WRITER_H
 
-#include <stdint.h>
-#include <stddef.h>
 #include <stdio.h>
-#include "display_formatter.h"
+#include <stdint.h>
+#include <stdbool.h>
 
 typedef enum {
-    OUT_STDOUT = 0,
-    OUT_FILE   = 1,
-    OUT_BOTH   = 2
+    OUTPUT_STDOUT,
+    OUTPUT_FILE,
+    OUTPUT_BOTH
 } output_dest_t;
 
 typedef struct {
-    output_dest_t    dest;
-    display_config_t fmt_cfg;
-    FILE            *file;        /* non-NULL when dest includes OUT_FILE */
-    char             filepath[256];
-    uint64_t         bytes_written;
-    uint64_t         lines_written;
+    output_dest_t dest;
+    FILE         *file;
+    bool          use_color;
+    bool          flush_each_write;
 } output_writer_t;
 
-/* Initialize writer; opens file if dest requires it. Returns 0 on success. */
-int  output_writer_init(output_writer_t *w, output_dest_t dest,
-                        const char *filepath,
-                        const display_config_t *fmt_cfg);
-
-/* Write a data buffer through the writer. Returns 0 on success. */
-int  output_writer_write(output_writer_t *w,
-                         const uint8_t *data, size_t len,
-                         uint64_t timestamp_us);
-
-/* Flush any pending output. */
-void output_writer_flush(output_writer_t *w);
-
-/* Close file handle if open; resets state. */
-void output_writer_close(output_writer_t *w);
+int  output_writer_init(output_writer_t *ow, output_dest_t dest,
+                        const char *filepath, bool use_color);
+void output_writer_close(output_writer_t *ow);
+int  output_writer_write(output_writer_t *ow, const char *fmt, ...);
+int  output_writer_write_bytes(output_writer_t *ow,
+                               const uint8_t *data, size_t len);
+void output_writer_flush(output_writer_t *ow);
+bool output_writer_is_open(const output_writer_t *ow);
 
 #endif /* OUTPUT_WRITER_H */
