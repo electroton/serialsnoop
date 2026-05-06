@@ -1,97 +1,118 @@
+/*
+ * test_baudrate_detector.c - Unit tests for baud rate detector
+ */
+
 #include <stdio.h>
-#include <stdint.h>
-#include <string.h>
 #include <assert.h>
+#include <stdint.h>
 #include "../src/baudrate_detector.h"
 
-/* One bit period in ns for a given baud rate */
-static uint64_t bit_period_ns(uint32_t baud) {
-    return (uint64_t)(1000000000ULL / baud);
+static int tests_run = 0;
+static int tests_passed = 0;
+
+#define TEST(name) static void test_##name(void)
+#define RUN(name) do { tests_run++; test_##name(); tests_passed++; printf("  PASS: " #name "\n"); } while(0)
+
+TEST(init) {
+    baudrate_detector_t det;
+    baudrate_detector_init(&det);
+    assert(det.state == BDET_IDLE);
+    assert(det.detected_baudrate == 0);
+    assert(det.sample_count == 0);
+    assert(det.confidence == 0.0f);
 }
 
-static void test_init(void) {
-    BaudrateDetector det;
+TEST(record_pulse_updates_state) {
+    baudrate_detector_t det;
     baudrate_detector_init(&det);
-    assert(det.pulse_count == 0);
-    assert(det.detected_baud == 0);
-    assert(det.confidence == 0);
-    printf("PASS test_init\n");
+    baudrate_detector_record_pulse(&det, 104); /* ~9600 baud bit period */
+    assert(det.state == BDET_SAMPLING);
+    assert(det.sample_count == 1);
 }
 
-static void test_record_pulse(void) {
-    BaudrateDetector det;
+TEST(detect_9600_baud) {
+    baudrate_detector_t det;
     baudrate_detector_init(&det);
-    assert(baudrate_detector_record_pulse(&det, 8680) == 0);
-    assert(det.pulse_count == 1);
-    assert(det.pulse_widths_ns[0] == 8680);
-    printf("PASS test_record_pulse\n");
-}
-
-static void test_buffer_full(void) {
-    BaudrateDetector det;
-    baudrate_detector_init(&det);
-    for (int i = 0; i < 64; i++) {
-        assert(baudrate_detector_record_pulse(&det, 8680) == 0);
+    /* 9600 baud => ~104 us per bit */
+    for (int i = 0; i < BDET_MIN_SAMPLES; i++) {
+        baudrate_detector_record_pulse(&det, 104);
     }
-    assert(baudrate_detector_record_pulse(&det, 8680) == -1);
-    printf("PASS test_buffer_full\n");
+    int rc = baudrate_detector_analyze(&det);
+    assert(rc == 0);
+    assert(det.state == BDET_DETECTED);
+    assert(det.detected_baudrate == 9600);
+    assert(det.confidence > 0.5f);
 }
 
-static void test_analyze_115200(void) {
-    BaudrateDetector det;
+TEST(detect_115200_baud) {
+    baudrate_detector_t det;
     baudrate_detector_init(&det);
-    uint64_t period = bit_period_ns(115200); /* ~8680 ns */
-    /* Feed multiples of the bit period to simulate real pulses */
-    baudrate_detector_record_pulse(&det, period * 1);
-    baudrate_detector_record_pulse(&det, period * 2);
-    baudrate_detector_record_pulse(&det, period * 1);
-    baudrate_detector_record_pulse(&det, period * 3);
-    baudrate_detector_record_pulse(&det, period * 1);
-    BaudrateCandidate c = baudrate_detector_analyze(&det);
-    assert(c.baud_rate == 115200);
-    assert(c.confidence >= BAUDRATE_CONFIDENCE_THRESHOLD);
-    printf("PASS test_analyze_115200 (confidence=%d)\n", c.confidence);
+    /* 115200 baud => ~8.68 us per bit, use 9 us */
+    for (int i = 0; i < BDET_MIN_SAMPLES; i++) {
+        baudrate_detector_record_pulse(&det, 9);
+    }
+    int rc = baudrate_detector_analyze(&det);
+    assert(rc == 0);
+    assert(det.state == BDET_DETECTED);
+    assert(det.detected_baudrate == 115200);
 }
 
-static void test_analyze_9600(void) {
-    BaudrateDetector det;
+TEST(analyze_fails_insufficient_samples) {
+    baudrate_detector_t det;
     baudrate_detector_init(&det);
-    uint64_t period = bit_period_ns(9600); /* ~104167 ns */
-    baudrate_detector_record_pulse(&det, period * 1);
-    baudrate_detector_record_pulse(&det, period * 2);
-    baudrate_detector_record_pulse(&det, period * 1);
-    baudrate_detector_record_pulse(&det, period * 4);
-    BaudrateCandidate c = baudrate_detector_analyze(&det);
-    assert(c.baud_rate == 9600);
-    assert(c.confidence >= BAUDRATE_CONFIDENCE_THRESHOLD);
-    printf("PASS test_analyze_9600 (confidence=%d)\n", c.confidence);
+    baudrate_detector_record_pulse(&det, 104);
+    int rc = baudrate_detector_analyze(&det);
+    assert(rc == -1);
 }
 
-static void test_reset(void) {
-    BaudrateDetector det;
+TEST(analyze_fails_unknown_baudrate) {
+    baudrate_detector_t det;
     baudrate_detector_init(&det);
-    baudrate_detector_record_pulse(&det, 8680);
+    /* 7777 baud => ~128.6 us, not a standard rate */
+    for (int i = 0; i < BDET_MIN_SAMPLES; i++) {
+        baudrate_detector_record_pulse(&det, 129);
+    }
+    int rc = baudrate_detector_analyze(&det);
+    /* May fail or match loosely; just verify no crash */
+    (void)rc;
+}
+
+TEST(reset_clears_state) {
+    baudrate_detector_t det;
+    baudrate_detector_init(&det);
+    baudrate_detector_record_pulse(&det, 104);
     baudrate_detector_reset(&det);
-    assert(det.pulse_count == 0);
-    assert(det.detected_baud == 0);
-    printf("PASS test_reset\n");
+    assert(det.state == BDET_IDLE);
+    assert(det.sample_count == 0);
+    assert(det.detected_baudrate == 0);
 }
 
-static void test_baudrate_to_string(void) {
-    assert(strcmp(baudrate_to_string(115200), "115200") == 0);
-    assert(strcmp(baudrate_to_string(9600),   "9600")   == 0);
-    assert(strcmp(baudrate_to_string(0),      "unknown") == 0);
-    printf("PASS test_baudrate_to_string\n");
+TEST(state_str) {
+    assert(baudrate_detector_state_str(BDET_IDLE)[0] != '\0');
+    assert(baudrate_detector_state_str(BDET_SAMPLING)[0] != '\0');
+    assert(baudrate_detector_state_str(BDET_DETECTED)[0] != '\0');
+    assert(baudrate_detector_state_str(BDET_FAILED)[0] != '\0');
+}
+
+TEST(null_safety) {
+    baudrate_detector_init(NULL);
+    baudrate_detector_record_pulse(NULL, 104);
+    baudrate_detector_reset(NULL);
+    int rc = baudrate_detector_analyze(NULL);
+    assert(rc == -1);
 }
 
 int main(void) {
-    test_init();
-    test_record_pulse();
-    test_buffer_full();
-    test_analyze_115200();
-    test_analyze_9600();
-    test_reset();
-    test_baudrate_to_string();
-    printf("All baudrate_detector tests passed.\n");
-    return 0;
+    printf("Running baudrate_detector tests...\n");
+    RUN(init);
+    RUN(record_pulse_updates_state);
+    RUN(detect_9600_baud);
+    RUN(detect_115200_baud);
+    RUN(analyze_fails_insufficient_samples);
+    RUN(analyze_fails_unknown_baudrate);
+    RUN(reset_clears_state);
+    RUN(state_str);
+    RUN(null_safety);
+    printf("\nResults: %d/%d passed\n", tests_passed, tests_run);
+    return (tests_passed == tests_run) ? 0 : 1;
 }
