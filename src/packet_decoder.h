@@ -29,6 +29,10 @@ int decoder_init(protocol_t proto);
 
 /*
  * Decode raw bytes into a decoded_packet_t.
+ * buf          - pointer to raw input bytes (must not be NULL)
+ * len          - number of bytes in buf (must be > 0 and <= 256)
+ * timestamp_ms - capture timestamp in milliseconds
+ * out          - pointer to caller-allocated decoded_packet_t (must not be NULL)
  * Returns 0 on success, -1 on error.
  */
 int decoder_decode(const uint8_t *buf, size_t len,
@@ -37,7 +41,15 @@ int decoder_decode(const uint8_t *buf, size_t len,
 
 /*
  * Return a human-readable protocol name string.
+ * Returns "unknown" if proto is not a recognised protocol_t value.
  */
 const char *decoder_protocol_name(protocol_t proto);
+
+/*
+ * Reset the decoder state without re-initialising the protocol.
+ * Useful for clearing any accumulated framing state between captures.
+ * Returns 0 on success, -1 if the decoder has not been initialised.
+ */
+int decoder_reset(void);
 
 #endif /* PACKET_DECODER_H */
