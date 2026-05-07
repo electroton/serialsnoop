@@ -1,0 +1,34 @@
+# Makefile fragment for building and running error_reporter tests
+# Include or invoke from the project root Makefile
+
+CC      ?= gcc
+CFLAGS  ?= -Wall -Wextra -std=c99 -g
+SRCDIR  := ../src
+TESTDIR := .
+
+ERROR_REPORTER_OBJS := \
+    $(SRCDIR)/error_reporter.o
+
+ERROR_REPORTER_TEST := test_error_reporter
+
+$(SRCDIR)/error_reporter.o: $(SRCDIR)/error_reporter.c $(SRCDIR)/error_reporter.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(TESTDIR)/test_error_reporter.o: $(TESTDIR)/test_error_reporter.c $(SRCDIR)/error_reporter.h
+	$(CC) $(CFLAGS) -I$(SRCDIR) -c $< -o $@
+
+$(ERROR_REPORTER_TEST): $(TESTDIR)/test_error_reporter.o $(ERROR_REPORTER_OBJS)
+	$(CC) $(CFLAGS) $^ -o $@
+
+.PHONY: test_error_reporter run_error_reporter_tests clean_error_reporter
+
+test_error_reporter: $(ERROR_REPORTER_TEST)
+
+run_error_reporter_tests: $(ERROR_REPORTER_TEST)
+	@echo "Running error_reporter tests..."
+	@./$(ERROR_REPORTER_TEST)
+
+clean_error_reporter:
+	$(RM) $(ERROR_REPORTER_OBJS) \
+	      $(TESTDIR)/test_error_reporter.o \
+	      $(ERROR_REPORTER_TEST)
